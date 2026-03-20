@@ -11,12 +11,16 @@ local KindleBridge = WidgetContainer:extend{
     name = "kindle-bridge",
 }
 
-local PORT = 8080
+local PORT         = 8080
+local TOKEN_FILE   = "kindle-bridge-token.txt"
+local TOKEN_PATH   = "/mnt/us/koreader/" .. TOKEN_FILE
+
 local server      = nil
 local timer_func  = nil
 local sse_client  = nil   -- at most one SSE subscriber at a time
 local last_page   = -1    -- tracks page changes for SSE
-local last_title  = ""     -- tracks book changes for SSE
+local last_title  = ""    -- tracks book changes for SSE
+local auth_token  = nil   -- loaded from file or auto-generated
 local DOCUMENTS_DIR = "/mnt/us/documents/"
 
 -- ── get real Wi-Fi IP ─────────────────────────────────────────────────────────
@@ -28,6 +32,41 @@ local function get_local_ip()
     local ip = udp:getsockname()
     udp:close()
     return ip or "unknown"
+end
+
+-- ── auth token ───────────────────────────────────────────────────────────────
+-- Token is stored in a plain text file on the Kindle's USB storage.
+-- On first run it is auto-generated. The iPhone reads it once (via USB or
+-- the one-time /token endpoint) and includes it in every request as:
+--   X-Bridge-Token: <token>
+
+local function generate_token()
+    -- simple 8-char hex token from time + math.random
+    math.randomseed(os.time())
+    local t = string.format("%04x%04x", math.random(0, 0xffff), math.random(0, 0xffff))
+    return t
+end
+
+local function load_or_create_token()
+    local f = io.open(TOKEN_PATH, "r")
+    if f then
+        local t = f:read("*l")
+        f:close()
+        if t and #t >= 8 then
+            logger.info("KindleBridge: loaded token from " .. TOKEN_PATH)
+            return t
+        end
+    end
+    local t = generate_token()
+    local fw = io.open(TOKEN_PATH, "w")
+    if fw then fw:write(t) fw:close() end
+    logger.info("KindleBridge: created new token -> " .. TOKEN_PATH)
+    return t
+end
+
+local function check_auth(headers)
+    -- /ping and /token are always public so the iPhone can bootstrap
+    return headers["x-bridge-token"] == auth_token
 end
 
 -- ── JSON response helper ──────────────────────────────────────────────────────
@@ -375,11 +414,22 @@ local function handle(client)
     local headers = parse_headers(client)
     logger.info("KindleBridge: " .. method .. " " .. path)
 
+    -- /ping and /token are public; everything else requires auth
+    local public = (path == "/ping" or path == "/token")
+    if not public and not check_auth(headers) then
+        send_json(client, "401 Unauthorized", { error = "missing or invalid X-Bridge-Token" })
+        return
+    end
+
     if     method == "GET"  and path == "/ping"       then
         send_json(client, "200 OK", {
-            ok = true, service = "kindle-bridge", version = "3.0.0",
+            ok = true, service = "kindle-bridge", version = "4.0.0",
             ip = get_local_ip(), port = PORT,
         })
+    elseif method == "GET"  and path == "/token"      then
+        -- one-time bootstrap: returns token so iPhone can grab it over USB or LAN
+        send_json(client, "200 OK", { token = auth_token })
+
     elseif method == "GET"  and path == "/progress"   then
         send_json(client, "200 OK", get_progress())
     elseif method == "GET"  and path == "/highlights"  then
@@ -468,6 +518,8 @@ function KindleBridge:init()
         return
     end
 
+    auth_token = load_or_create_token()
+
     local srv, err = socket.bind("*", PORT)
     if not srv then
         logger.err("KindleBridge: bind failed: " .. tostring(err))
@@ -500,9 +552,9 @@ end
 -- onKOReaderClose fires only when KOReader actually exits.
 function KindleBridge:onKOReaderClose()
     logger.info("KindleBridge: KOReader closing, stopping server")
-    if sse_client then pcall(function() sse_client:close() end) sse_client = nil end
-    if server then server:close() server = nil end
-    if timer_func then UIManager:unschedule(timer_func) timer_func = nil end
+    if sse_client  then pcall(function() sse_client:close()  end) sse_client  = nil end
+    if server      then server:close() server = nil end
+    if timer_func  then UIManager:unschedule(timer_func) timer_func = nil end
 end
 
 -- onReaderReady fires when a document finishes loading.

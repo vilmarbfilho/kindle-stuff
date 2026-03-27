@@ -99,11 +99,22 @@ Xcode will:
 
 ## Step 7 — Trust the developer certificate on iPhone
 
-The first time you run an app signed with a free personal team, iOS blocks it. Fix it on your iPhone:
+The first time you tap the app icon, iOS shows an **"Untrusted Developer"** dialog and blocks the app from opening. This is normal for apps installed outside the App Store.
 
-**Settings → General → VPN & Device Management → Developer App → [your Apple ID] → Trust**
+To fix it:
 
-After tapping Trust, go back to the app and open it. It will now run fully standalone — no Mac, no Expo Go, no terminal needed.
+1. Open **Settings** on your iPhone
+2. Tap **General**
+3. Scroll down and tap **VPN & Device Management**
+4. Under **Developer App**, tap the entry showing your Apple ID (e.g. `Apple Development: yourname@gmail.com (XXXXXXXXX)`)
+5. Tap **Trust "Apple Development: yourname@gmail.com"**
+6. Tap **Trust** on the confirmation dialog
+
+Go back to the home screen and tap the app icon — it will now open normally.
+
+After tapping Trust the app runs fully standalone — no Mac, no Expo Go, no terminal needed.
+
+> **Note:** This trust step is required once per Apple ID per device. After reinstalling the app (e.g. after the 7-day expiry) you do not need to trust again unless you use a different Apple ID.
 
 ---
 
@@ -164,8 +175,13 @@ open ios/kindle-bridge-app.xcworkspace
 ### Build fails with "No profiles for bundle identifier"
 Change the bundle identifier in Xcode (**Signing & Capabilities** → **Bundle Identifier**) to something unique like `com.yourname.kindlebridge2` and try again.
 
-### "Untrusted Developer" error on iPhone
-Go to **Settings → General → VPN & Device Management** and trust your Apple ID certificate.
+### "Untrusted Developer" dialog when tapping the app icon
+This is expected on first install. Follow these steps:
+1. **Settings → General → VPN & Device Management**
+2. Tap your Apple ID entry under **Developer App**
+3. Tap **Trust "Apple Development: yourname@gmail.com"**
+4. Tap **Trust** to confirm
+5. Return to the home screen and open the app normally
 
 ### App crashes immediately after install
 The JavaScript bundle may be missing. Run `npx expo export --platform ios` first, then rebuild in Xcode.
@@ -189,8 +205,9 @@ open ios/kindle-bridge-app.xcworkspace
 #    - Set Team to your Apple ID (Personal Team)
 #    - Press Run (Cmd + R)
 
-# 5. On iPhone:
-#    Settings → General → VPN & Device Management → Trust
+# 5. On iPhone (first time only):
+#    Settings → General → VPN & Device Management
+#    → tap your Apple ID entry → Trust → Trust
 ```
 
 Total time from scratch: ~15–20 minutes (mostly Xcode compilation on first build, ~3 minutes on subsequent builds).

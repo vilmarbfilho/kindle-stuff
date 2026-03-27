@@ -138,9 +138,9 @@ export async function pushFile(
   onProgress?: (sent: number, total: number) => void,
 ): Promise<{ ok: boolean; bytes?: number; error?: string }> {
   // Read file as base64, then convert to binary for upload
-  const FileSystem = (await import('expo-file-system')).default;
-  const base64 = await FileSystem.readAsStringAsync(fileUri, {
-    encoding: FileSystem.EncodingType.Base64,
+  const { readAsStringAsync } = await import('expo-file-system');
+  const base64 = await readAsStringAsync(fileUri, {
+    encoding: 'base64',
   });
 
   // Convert base64 to binary string

@@ -1,11 +1,13 @@
 // screens/DashboardScreen.tsx
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  ScrollView, RefreshControl,
+  ScrollView, RefreshControl, Alert,
 } from 'react-native';
 import { useKindle } from '../context/KindleContext';
-import { openEventStream, getProgress, Progress } from '../kindle';
+import { getProgress, Progress } from '../kindle';
+
+const POLL_INTERVAL_MS = 3000;
 
 export default function DashboardScreen() {
   const { config, setConfig } = useKindle();
@@ -13,37 +15,49 @@ export default function DashboardScreen() {
   const [connected, setConnected] = useState(false);
   const [lastEvent, setLastEvent] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => {
+  const fetchProgress = useCallback(async () => {
     if (!config) return;
-    setConnected(false);
-
-    const stop = openEventStream(
-      config,
-      (p) => {
-        setProgress(p);
-        setConnected(true);
-        setLastEvent(new Date().toLocaleTimeString());
-      },
-      (_err) => {
-        setConnected(false);
-      },
-    );
-
-    return stop;
-  }, [config]);
-
-  const onRefresh = useCallback(async () => {
-    if (!config) return;
-    setRefreshing(true);
     try {
       const p = await getProgress(config);
       setProgress(p);
+      setConnected(true);
       setLastEvent(new Date().toLocaleTimeString());
-    } finally {
-      setRefreshing(false);
+    } catch {
+      setConnected(false);
     }
   }, [config]);
+
+  // Poll every 3 seconds
+  useEffect(() => {
+    if (!config) return;
+
+    // immediate first fetch
+    fetchProgress();
+
+    timerRef.current = setInterval(fetchProgress, POLL_INTERVAL_MS);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [config, fetchProgress]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchProgress();
+    setRefreshing(false);
+  }, [fetchProgress]);
+
+  function handleDisconnect() {
+    Alert.alert(
+      'Disconnect',
+      'Remove saved Kindle connection?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Disconnect', style: 'destructive', onPress: () => setConfig(null) },
+      ],
+    );
+  }
 
   const percent = progress?.percent ?? 0;
   const hasBook = progress && progress.title !== 'No book open';
@@ -52,15 +66,21 @@ export default function DashboardScreen() {
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#60a5fa" />}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+          tintColor="#60a5fa"
+        />
+      }
     >
       {/* Connection status */}
       <View style={styles.statusRow}>
         <View style={[styles.dot, { backgroundColor: connected ? '#22c55e' : '#ef4444' }]} />
         <Text style={styles.statusText}>
-          {connected ? `Live  ·  ${config?.ip}` : 'Connecting...'}
+          {connected ? `Connected · ${config?.ip}` : 'Connecting...'}
         </Text>
-        <TouchableOpacity onPress={() => setConfig(null)}>
+        <TouchableOpacity onPress={handleDisconnect}>
           <Text style={styles.disconnectText}>Disconnect</Text>
         </TouchableOpacity>
       </View>
@@ -80,8 +100,8 @@ export default function DashboardScreen() {
             </View>
 
             <View style={styles.statsRow}>
-              <Stat label="Page" value={String(progress.page)} />
-              <Stat label="Total" value={String(progress.total)} />
+              <Stat label="Page"     value={String(progress.page)} />
+              <Stat label="Total"    value={String(progress.total)} />
               <Stat label="Progress" value={`${percent}%`} />
             </View>
 
@@ -93,7 +113,9 @@ export default function DashboardScreen() {
           <View style={styles.noBook}>
             <Text style={styles.noBookIcon}>📖</Text>
             <Text style={styles.noBookText}>No book open</Text>
-            <Text style={styles.noBookSub}>Open a book in KOReader to see progress here</Text>
+            <Text style={styles.noBookSub}>
+              Open a book in KOReader to see progress here
+            </Text>
           </View>
         )}
       </View>
@@ -101,6 +123,8 @@ export default function DashboardScreen() {
       {lastEvent ? (
         <Text style={styles.lastEvent}>Last update: {lastEvent}</Text>
       ) : null}
+
+      <Text style={styles.pollNote}>Refreshes every 3 seconds · pull to refresh manually</Text>
     </ScrollView>
   );
 }
@@ -168,14 +192,11 @@ const styles = StyleSheet.create({
   stat: { alignItems: 'center' },
   statValue: { fontSize: 22, fontWeight: '700', color: '#fff' },
   statLabel: { fontSize: 12, color: '#888', marginTop: 2 },
-  filePath: {
-    fontSize: 11,
-    color: '#555',
-    marginTop: 4,
-  },
+  filePath: { fontSize: 11, color: '#555', marginTop: 4 },
   noBook: { alignItems: 'center', paddingVertical: 24 },
   noBookIcon: { fontSize: 48, marginBottom: 12 },
   noBookText: { fontSize: 18, fontWeight: '600', color: '#fff', marginBottom: 6 },
   noBookSub: { fontSize: 14, color: '#888', textAlign: 'center' },
-  lastEvent: { textAlign: 'center', color: '#444', fontSize: 12 },
+  lastEvent: { textAlign: 'center', color: '#444', fontSize: 12, marginBottom: 4 },
+  pollNote: { textAlign: 'center', color: '#333', fontSize: 11 },
 });

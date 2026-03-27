@@ -7,6 +7,28 @@ import {
 import { useKindle } from '../context/KindleContext';
 import { getHighlights, Highlight } from '../kindle';
 
+// Map KOReader drawer types to accent colors
+const DRAWER_COLORS: Record<string, string> = {
+  lighten:    '#facc15',  // yellow
+  underscore: '#60a5fa',  // blue
+  strikeout:  '#f87171',  // red
+  invert:     '#a78bfa',  // purple
+};
+
+function drawerColor(drawer: string) {
+  return DRAWER_COLORS[drawer] ?? '#2563eb';
+}
+
+function drawerLabel(drawer: string) {
+  const labels: Record<string, string> = {
+    lighten:    'Highlight',
+    underscore: 'Underline',
+    strikeout:  'Strikeout',
+    invert:     'Invert',
+  };
+  return labels[drawer] ?? 'Highlight';
+}
+
 export default function HighlightsScreen() {
   const { config } = useKindle();
   const [highlights, setHighlights] = useState<Highlight[]>([]);
@@ -43,6 +65,7 @@ export default function HighlightsScreen() {
         <Text style={styles.emptyTitle}>Highlights</Text>
         <Text style={styles.emptyDesc}>
           Fetch highlights from the currently open book in KOReader.
+          Make sure a book with highlights is open.
         </Text>
         <TouchableOpacity style={styles.button} onPress={load}>
           <Text style={styles.buttonText}>Load Highlights</Text>
@@ -51,7 +74,7 @@ export default function HighlightsScreen() {
     );
   }
 
-  if (loading) {
+  if (loading && !loaded) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color="#2563eb" />
@@ -61,10 +84,13 @@ export default function HighlightsScreen() {
   }
 
   if (error) {
+    const hint = error === 'no sidecar found'
+      ? 'No highlights found for this book yet. Create a highlight in KOReader first by long-pressing on text.'
+      : error;
     return (
       <View style={styles.center}>
         <Text style={styles.errorIcon}>⚠️</Text>
-        <Text style={styles.errorText}>{error}</Text>
+        <Text style={styles.errorText}>{hint}</Text>
         <TouchableOpacity style={styles.button} onPress={load}>
           <Text style={styles.buttonText}>Try Again</Text>
         </TouchableOpacity>
@@ -77,28 +103,52 @@ export default function HighlightsScreen() {
       style={styles.container}
       data={highlights}
       keyExtractor={(_, i) => String(i)}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor="#60a5fa" />}
+      refreshControl={
+        <RefreshControl refreshing={loading} onRefresh={load} tintColor="#60a5fa" />
+      }
       ListHeaderComponent={
         <View style={styles.header}>
-          <Text style={styles.bookTitle}>{title}</Text>
-          <Text style={styles.count}>{highlights.length} highlight{highlights.length !== 1 ? 's' : ''}</Text>
+          <Text style={styles.bookTitle} numberOfLines={2}>{title}</Text>
+          <Text style={styles.count}>
+            {highlights.length} highlight{highlights.length !== 1 ? 's' : ''}
+          </Text>
         </View>
       }
       ListEmptyComponent={
         <View style={styles.center}>
-          <Text style={styles.emptyDesc}>No highlights found for this book yet.</Text>
+          <Text style={styles.emptyDesc}>
+            No highlights found.{'\n'}
+            Long-press on text in KOReader to create a highlight.
+          </Text>
+          <TouchableOpacity style={styles.button} onPress={load}>
+            <Text style={styles.buttonText}>Refresh</Text>
+          </TouchableOpacity>
         </View>
       }
-      renderItem={({ item, index }) => (
-        <View style={styles.card}>
-          <Text style={styles.highlightText}>"{item.text}"</Text>
-          <View style={styles.meta}>
-            {item.chapter ? <Text style={styles.metaText}>{item.chapter}</Text> : null}
-            <Text style={styles.metaText}>Page {item.page}</Text>
-            {item.time ? <Text style={styles.metaText}>{item.time}</Text> : null}
+      renderItem={({ item }) => {
+        const color = drawerColor(item.drawer ?? '');
+        return (
+          <View style={[styles.card, { borderLeftColor: color }]}>
+            <Text style={styles.highlightText}>"{item.text}"</Text>
+            <View style={styles.meta}>
+              <View style={[styles.drawerBadge, { backgroundColor: color + '33' }]}>
+                <Text style={[styles.drawerLabel, { color }]}>
+                  {drawerLabel(item.drawer ?? '')}
+                </Text>
+              </View>
+              {item.chapter ? (
+                <Text style={styles.metaText}>{item.chapter}</Text>
+              ) : null}
+              {item.page ? (
+                <Text style={styles.metaText}>Page {item.page}</Text>
+              ) : null}
+              {item.time ? (
+                <Text style={styles.metaText}>{item.time}</Text>
+              ) : null}
+            </View>
           </View>
-        </View>
-      )}
+        );
+      }}
       contentContainerStyle={styles.listContent}
     />
   );
@@ -115,7 +165,13 @@ const styles = StyleSheet.create({
     padding: 32,
   },
   header: { marginBottom: 20 },
-  bookTitle: { fontSize: 20, fontWeight: '700', color: '#fff', marginBottom: 4 },
+  bookTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#fff',
+    marginBottom: 4,
+    lineHeight: 26,
+  },
   count: { fontSize: 14, color: '#888' },
   card: {
     backgroundColor: '#1c1c1e',
@@ -123,7 +179,6 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 12,
     borderLeftWidth: 3,
-    borderLeftColor: '#2563eb',
   },
   highlightText: {
     fontSize: 15,
@@ -132,20 +187,47 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginBottom: 10,
   },
-  meta: { flexDirection: 'row', gap: 12, flexWrap: 'wrap' },
+  meta: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+    alignItems: 'center',
+  },
+  drawerBadge: {
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  drawerLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
   metaText: { fontSize: 12, color: '#666' },
   emptyIcon: { fontSize: 48, marginBottom: 16 },
   emptyTitle: { fontSize: 22, fontWeight: '700', color: '#fff', marginBottom: 8 },
-  emptyDesc: { fontSize: 14, color: '#888', textAlign: 'center', lineHeight: 20, marginBottom: 24 },
+  emptyDesc: {
+    fontSize: 14,
+    color: '#888',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 24,
+  },
   button: {
     backgroundColor: '#2563eb',
     borderRadius: 12,
     paddingVertical: 14,
     paddingHorizontal: 32,
-    alignItems: 'center',
   },
   buttonText: { color: '#fff', fontWeight: '600', fontSize: 16 },
   loadingText: { color: '#888', marginTop: 16, fontSize: 14 },
   errorIcon: { fontSize: 40, marginBottom: 12 },
-  errorText: { color: '#f87171', fontSize: 14, textAlign: 'center', marginBottom: 24 },
+  errorText: {
+    color: '#f87171',
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 24,
+  },
 });

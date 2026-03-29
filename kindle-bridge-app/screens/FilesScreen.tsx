@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  Alert, ActivityIndicator, ScrollView,
+  Alert, ScrollView, Animated,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { useKindle } from '../context/KindleContext';
@@ -18,8 +18,16 @@ interface UploadRecord {
 export default function FilesScreen() {
   const { config } = useKindle();
   const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState('');
+  const [uploadFile, setUploadFile] = useState('');
+  const [progress, setProgress] = useState(0);       // 0–100
+  const [progressBytes, setProgressBytes] = useState({ sent: 0, total: 0 });
   const [history, setHistory] = useState<UploadRecord[]>([]);
+
+  function formatBytes(b: number) {
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+  }
 
   async function handlePick() {
     try {
@@ -37,7 +45,9 @@ export default function FilesScreen() {
       const size = asset.size ?? 0;
 
       setUploading(true);
-      setUploadProgress(`Uploading ${filename}...`);
+      setUploadFile(filename);
+      setProgress(0);
+      setProgressBytes({ sent: 0, total: size });
 
       const res = await pushFile(
         config!,
@@ -45,30 +55,32 @@ export default function FilesScreen() {
         uri,
         (sent, total) => {
           const pct = total > 0 ? Math.floor((sent / total) * 100) : 0;
-          setUploadProgress(`Uploading ${filename} — ${pct}%`);
+          setProgress(pct);
+          setProgressBytes({ sent, total });
         },
       );
 
       if (res.ok) {
+        setProgress(100);
         setHistory((h) => [{ name: filename, bytes: size, status: 'ok' }, ...h]);
-        setUploadProgress('');
-        Alert.alert('Done', `${filename} sent to Kindle documents.`);
+        setTimeout(() => {
+          setUploading(false);
+          setUploadFile('');
+          setProgress(0);
+        }, 1000);
       } else {
         setHistory((h) => [{ name: filename, bytes: size, status: 'error', error: res.error }, ...h]);
         Alert.alert('Upload failed', res.error ?? 'Unknown error');
+        setUploading(false);
+        setUploadFile('');
+        setProgress(0);
       }
     } catch (e: any) {
       Alert.alert('Error', e.message);
-    } finally {
       setUploading(false);
-      setUploadProgress('');
+      setUploadFile('');
+      setProgress(0);
     }
-  }
-
-  function formatBytes(b: number) {
-    if (b < 1024) return `${b} B`;
-    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-    return `${(b / (1024 * 1024)).toFixed(1)} MB`;
   }
 
   return (
@@ -81,20 +93,37 @@ export default function FilesScreen() {
         onPress={handlePick}
         disabled={uploading}
       >
-        {uploading
-          ? <ActivityIndicator color="#fff" />
-          : <Text style={styles.buttonText}>Choose File to Send</Text>
-        }
+        <Text style={styles.buttonText}>
+          {uploading ? 'Uploading...' : 'Choose File to Send'}
+        </Text>
       </TouchableOpacity>
 
-      {uploadProgress ? (
-        <Text style={styles.progressText}>{uploadProgress}</Text>
-      ) : null}
+      {/* Upload progress */}
+      {uploading && (
+        <View style={styles.progressCard}>
+          <Text style={styles.progressFilename} numberOfLines={1}>
+            {uploadFile}
+          </Text>
+
+          {/* Progress bar */}
+          <View style={styles.progressBarBg}>
+            <View style={[styles.progressBarFill, { width: `${progress}%` }]} />
+          </View>
+
+          <View style={styles.progressRow}>
+            <Text style={styles.progressPct}>{progress}%</Text>
+            <Text style={styles.progressSize}>
+              {formatBytes(progressBytes.sent)} / {formatBytes(progressBytes.total)}
+            </Text>
+          </View>
+        </View>
+      )}
 
       <View style={styles.hint}>
         <Text style={styles.hintText}>
           Supported formats: EPUB, MOBI, PDF, AZW3, TXT{'\n'}
-          Files are saved to /mnt/us/documents/ on the Kindle.
+          Files are saved to /mnt/us/documents/ on the Kindle.{'\n'}
+          Accented filenames are automatically transliterated.
         </Text>
       </View>
 
@@ -103,7 +132,9 @@ export default function FilesScreen() {
           <Text style={styles.sectionLabel}>Recent Uploads</Text>
           {history.map((rec, i) => (
             <View key={i} style={[styles.historyRow, rec.status === 'error' && styles.historyError]}>
-              <Text style={styles.historyIcon}>{rec.status === 'ok' ? '✓' : '✗'}</Text>
+              <Text style={[styles.historyIcon, rec.status === 'error' && styles.historyIconError]}>
+                {rec.status === 'ok' ? '✓' : '✗'}
+              </Text>
               <View style={styles.historyInfo}>
                 <Text style={styles.historyName} numberOfLines={1}>{rec.name}</Text>
                 <Text style={styles.historyMeta}>
@@ -128,11 +159,49 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingVertical: 16,
     alignItems: 'center',
+    marginBottom: 16,
+  },
+  buttonDisabled: { opacity: 0.5 },
+  buttonText: { color: '#fff', fontWeight: '600', fontSize: 16 },
+
+  progressCard: {
+    backgroundColor: '#1c1c1e',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 16,
+  },
+  progressFilename: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '500',
     marginBottom: 12,
   },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: { color: '#fff', fontWeight: '600', fontSize: 16 },
-  progressText: { color: '#60a5fa', fontSize: 14, textAlign: 'center', marginBottom: 12 },
+  progressBarBg: {
+    height: 8,
+    backgroundColor: '#2c2c2e',
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginBottom: 8,
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#2563eb',
+    borderRadius: 4,
+  },
+  progressRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  progressPct: {
+    color: '#60a5fa',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  progressSize: {
+    color: '#888',
+    fontSize: 13,
+  },
+
   hint: {
     backgroundColor: '#1c1c1e',
     borderRadius: 12,
@@ -158,6 +227,7 @@ const styles = StyleSheet.create({
   },
   historyError: { borderWidth: 1, borderColor: '#7f1d1d' },
   historyIcon: { fontSize: 18, marginRight: 12, color: '#22c55e' },
+  historyIconError: { color: '#ef4444' },
   historyInfo: { flex: 1 },
   historyName: { color: '#fff', fontSize: 15, fontWeight: '500' },
   historyMeta: { color: '#888', fontSize: 12, marginTop: 2 },

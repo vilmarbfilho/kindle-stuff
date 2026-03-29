@@ -22,6 +22,7 @@ export interface Highlight {
   chapter: string;
   page: number;
   time: string;
+  drawer?: string;
 }
 
 export interface HighlightsResponse {
@@ -137,31 +138,41 @@ export async function pushFile(
   fileUri: string,
   onProgress?: (sent: number, total: number) => void,
 ): Promise<{ ok: boolean; bytes?: number; error?: string }> {
-  // Read file as base64, then convert to binary for upload
-  const { readAsStringAsync } = await import('expo-file-system');
-  const base64 = await readAsStringAsync(fileUri, {
-    encoding: 'base64',
-  });
+  try {
+    onProgress?.(0, 1);
 
-  // Convert base64 to binary string
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    // Use the new SDK 54 File API to read file as ArrayBuffer
+    const { File } = await import('expo-file-system');
+    const file = new File(fileUri);
+    const arrayBuffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    const total = bytes.length;
+    onProgress?.(0, total);
 
-  onProgress?.(0, bytes.length);
+    // Upload via XHR with progress tracking
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `http://${cfg.ip}:${cfg.port}/file-sync`);
+      xhr.setRequestHeader('X-Bridge-Token', cfg.token);
+      xhr.setRequestHeader('X-Filename', filename);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.timeout = 120000;
 
-  const res = await fetch(`http://${cfg.ip}:${cfg.port}/file`, {
-    method: 'POST',
-    headers: {
-      'X-Bridge-Token': cfg.token,
-      'X-Filename': filename,
-      'Content-Length': String(bytes.length),
-    },
-    body: bytes,
-  });
-
-  onProgress?.(bytes.length, bytes.length);
-  return res.json();
+      xhr.upload.onprogress = (e) => {
+        onProgress?.(e.loaded, e.lengthComputable ? e.total : total);
+      };
+      xhr.onload = () => {
+        onProgress?.(total, total);
+        try { resolve(JSON.parse(xhr.responseText)); }
+        catch { resolve({ ok: false, error: `HTTP ${xhr.status}` }); }
+      };
+      xhr.onerror   = () => resolve({ ok: false, error: 'Network error' });
+      xhr.ontimeout = () => resolve({ ok: false, error: 'Timeout' });
+      xhr.send(bytes.buffer);
+    });
+  } catch (e: any) {
+    return { ok: false, error: e.message ?? 'File read error' };
+  }
 }
 
 // ── SSE stream ────────────────────────────────────────────────────────────────

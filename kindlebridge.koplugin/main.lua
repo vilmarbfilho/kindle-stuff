@@ -225,38 +225,111 @@ local function handle_file_start(client, headers)
     logger.info("KindleBridge: pending_file set, waiting for data ticks")
 end
 
+-- UTF-8 transliteration using byte sequences
+-- Each UTF-8 accented char is 2 bytes: 0xC3 followed by a second byte
+local BYTE_MAP = {
+    -- 0xC3 xx sequences (Latin-1 Supplement)
+    [0xA0]="a",[0xA1]="a",[0xA2]="a",[0xA3]="a",[0xA4]="a",[0xA5]="a",
+    [0xA8]="e",[0xA9]="e",[0xAA]="e",[0xAB]="e",
+    [0xAC]="i",[0xAD]="i",[0xAE]="i",[0xAF]="i",
+    [0xB2]="o",[0xB3]="o",[0xB4]="o",[0xB5]="o",[0xB6]="o",
+    [0xB9]="u",[0xBA]="u",[0xBB]="u",[0xBC]="u",
+    [0xB1]="n",[0xA7]="c",[0xBD]="y",[0xBF]="y",
+    -- uppercase (0x80-0x9F range after 0xC3)
+    [0x80]="A",[0x81]="A",[0x82]="A",[0x83]="A",[0x84]="A",[0x85]="A",
+    [0x88]="E",[0x89]="E",[0x8A]="E",[0x8B]="E",
+    [0x8C]="I",[0x8D]="I",[0x8E]="I",[0x8F]="I",
+    [0x92]="O",[0x93]="O",[0x94]="O",[0x95]="O",[0x96]="O",
+    [0x99]="U",[0x9A]="U",[0x9B]="U",[0x9C]="U",
+    [0x91]="N",[0x87]="C",[0x9D]="Y",
+}
+
+local function url_decode(s)
+    return s:gsub("%%(%x%x)", function(hex)
+        return string.char(tonumber(hex, 16))
+    end):gsub("+", " ")
+end
+
+local function sanitize_filename(name)
+    name = url_decode(name)
+
+    local result = ""
+    local i = 1
+    while i <= #name do
+        local b = name:byte(i)
+
+        if b == 0xC3 and i < #name then
+            -- NFC: precomposed accented char e.g. á = 0xC3 0xA1
+            local b2 = name:byte(i + 1)
+            result = result .. (BYTE_MAP[b2] or "_")
+            i = i + 2
+
+        elseif b == 0xCC and i < #name then
+            -- NFD: combining accent e.g. á = 'a' + 0xCC 0x81
+            -- the base letter was already added in the previous iteration
+            -- just skip the combining character entirely
+            i = i + 2
+
+        elseif b == 0xCD and i < #name then
+            -- other combining chars (e.g. 0xCD 0x82 combining circumflex)
+            i = i + 2
+
+        elseif b >= 0xC4 and b <= 0xC8 and i < #name then
+            -- other 2-byte UTF-8 sequences
+            result = result .. "_"
+            i = i + 2
+
+        elseif b >= 0xE0 and i + 2 <= #name then
+            -- 3-byte UTF-8 (CJK etc)
+            result = result .. "_"
+            i = i + 3
+
+        elseif b >= 32 and b < 127 then
+            result = result .. name:sub(i, i)
+            i = i + 1
+
+        else
+            result = result .. "_"
+            i = i + 1
+        end
+    end
+
+    result = result:gsub(" ", "_")
+    result = result:gsub("_+", "_")
+    result = result:gsub("^_+", ""):gsub("_+$", "")
+    return result
+end
+
 local function handle_file_start_sync(client, headers)
-    -- synchronous fallback: read entire body with a generous timeout
-    logger.info("KindleBridge: /file-sync called")
     local filename = headers["x-filename"]
     if not filename or filename == "" then
         send_json(client, "400 Bad Request", { error="missing X-Filename header" }); return
     end
     filename = filename:match("([^/\\]+)$") or filename
+
+    -- keep original for display, use sanitized for disk write
+    local safe_filename = sanitize_filename(filename)
     local len = tonumber(headers["content-length"]) or 0
-    logger.info("KindleBridge: sync upload "..filename.." len="..len)
     if len == 0 then
         send_json(client, "400 Bad Request", { error="missing Content-Length" }); return
     end
-    -- set a long timeout and read all at once
     client:settimeout(60)
     local data, err, partial = client:receive(len)
     local got = data or partial or ""
-    logger.info("KindleBridge: received "..#got.." bytes, err="..tostring(err))
     if #got == 0 then
         send_json(client, "500 Internal Server Error", { error="no data: "..tostring(err) }); return
     end
-    local dest = DOCUMENTS_DIR .. filename
+    local dest = DOCUMENTS_DIR .. safe_filename
     local f, ferr = io.open(dest, "wb")
     if not f then
         send_json(client, "500 Internal Server Error", { error=tostring(ferr) }); return
     end
     f:write(got); f:close()
-    logger.info("KindleBridge: file saved to "..dest)
-    send_json(client, "200 OK", { ok=true, filename=filename, bytes=#got, path=dest })
+    logger.info("KindleBridge: saved "..dest.." ("..#got.." bytes)")
+    send_json(client, "200 OK", { ok=true, filename=safe_filename, bytes=#got, path=dest })
     UIManager:scheduleIn(0.1, function()
         pcall(function()
-            UIManager:show(InfoMessage:new{ text="File received:\n"..filename, timeout=4 })
+            UIManager:show(InfoMessage:new{ text="File received:\n"..safe_filename, timeout=4 })
         end)
     end)
 end
@@ -394,6 +467,24 @@ local function handle(client)
     elseif method=="POST" and path=="/text"       then handle_text(client,headers)
     elseif method=="POST" and path=="/file"       then handle_file_start(client,headers)
     elseif method=="POST" and path=="/file-sync"  then handle_file_start_sync(client,headers)
+    elseif method=="GET"  and path=="/debug-filename" then
+        local raw = headers["x-filename"] or ""
+        local bytes = {}
+        for i = 1, #raw do
+            bytes[#bytes+1] = string.format("%02X", raw:byte(i))
+        end
+        local decoded = url_decode(raw)
+        local dbytes = {}
+        for i = 1, #decoded do
+            dbytes[#dbytes+1] = string.format("%02X", decoded:byte(i))
+        end
+        send_json(client, "200 OK", {
+            raw          = raw,
+            raw_bytes    = table.concat(bytes, " "),
+            decoded      = decoded,
+            decoded_bytes= table.concat(dbytes, " "),
+            sanitized    = sanitize_filename(raw),
+        })
     elseif method=="POST" and path=="/cmd"        then handle_cmd(client,headers)
     else send_json(client,"404 Not Found",{ error="not found",path=path })
     end
